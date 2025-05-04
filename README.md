@@ -1,3 +1,38 @@
+# witcher-3-modlist-manager-fork
+An amazing tool for influencers, broken builders, developers and advanced The Witcher 3 players.
+
+In Fork changes:
+- Updating for work with Windows 11
+- Lots of changes around the main code for UX with some auto generated step
+- Some security has been added during runtime
+- Added Uninitialize function to restore original game state
+- Most symbolic links in the Home Directory have been removed due to their frequent corruption ( Windows security protection ), resulting in lasting stability and improved functionality
+- Added input.settings auto imports keys from imported modlists
+- MAKE SURE the game is installed on a separate partition because partition C is protected by the system !!!
+- Every Mod Manager and Script Merger settings are saved in the current modlist
+- Please read carefully the original README below
+
+## witcher-3-modlist-manager-fork - howto install
+- Restore the game to its original state without mods or fresh install. You can enable the debug console, disable starting screen, etc.
+- Check if the /mods folder exists and is empty in game root.
+- In the main game directory, create a folder /modlists and paste tw3-modlist-manager.exe into.
+- In the main game directory, create a folder /scriptmerger and paste WitcherScriptMerger files into.
+- Rename The Witcher 3 folder in User Documents directory ( if exists ).
+- Run the game once, ( a new game folder will be created in Documents ) and configure language, graphics, etc.
+- Run The Witcher 3 Mod Manager once, make shure is completely empty ( no mods, no mods priority ) and set Script Merger location to /scriptmerger/WitcherScriptMerger.exe in game root directory.
+- [ OPTIONAL ] Now you can paste a number of your favorite game saves free from mod inclusions to the /Documents/The Witcher 3/gamesaves, these saves will be visible as background in any playable modlists.
+- New game saves will be saved in the current modlist, so they won't conflict with each other.
+- Now You can run tw3-modlist-manager.exe.
+- Have fun.
+  
+
+
+
+
+
+
+
+
 # witcher-3-modlist-manager
 Small utility to manage different mod lists for the game The Witcher 3 
 
