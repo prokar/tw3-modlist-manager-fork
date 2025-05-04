@@ -1,4 +1,4 @@
-use fs::{copy, remove_dir_all};
+
 use fs_extra;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -7,11 +7,13 @@ use toml;
 
 use crate::constants;
 use crate::utils::symlinks::{make_symlink, remove_symlink, remove_symlinks, symlink_children};
+use crate::utils::helper::{self, copy_dir_files, merge_inputs_settings, truncate_input_settings};
 
 #[derive(Deserialize, Serialize)]
 pub struct ModListConfig {
   imports: Vec<String>,
   visibility: Option<i64>,
+  loaded: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -30,6 +32,7 @@ pub struct ModList {
   pub imported_modlists: Vec<String>,
 
   pub visibility: i64,
+  pub loaded: bool,
 }
 
 impl ModList {
@@ -38,12 +41,29 @@ impl ModList {
       name,
       imported_modlists: Vec::new(),
       visibility: 0,
+      loaded: false,
     }
   }
 
   pub fn import_modlist(&mut self, modlist_name: &str) {
     if !self.imported_modlists.iter().any(|m| m == modlist_name) {
       self.imported_modlists.push(modlist_name.to_owned());
+    }
+
+    let van = "vanilla";
+    // check if modist vanilla is imported and is the last one in the Vec
+    if self.has_modlist_imported(van) && self.imported_modlists.last().unwrap() != van {
+      let vanilla_index = self
+      .imported_modlists
+      .iter()
+      .position(|modlist| modlist == van);
+      
+      if let Some(index) = vanilla_index {
+        if index != self.imported_modlists.len() - 1 {
+          self.imported_modlists.remove(index);
+          self.imported_modlists.push(van.to_owned());
+        }
+      }
     }
   }
 
@@ -98,13 +118,14 @@ impl ModList {
 
     let text = fs::read_to_string(config_path)?;
 
-    let toml_config: ModListConfig = toml::from_str(&text)?;
+    let toml_config: ModListConfig = toml::from_str(&text).unwrap();
 
     for import in toml_config.imports {
       self.import_modlist(&import);
     }
 
     self.visibility = toml_config.visibility.unwrap_or(0);
+    self.loaded = toml_config.loaded;
 
     Ok(())
   }
@@ -125,6 +146,7 @@ impl ModList {
         .map(String::from)
         .collect(),
       visibility: Some(self.visibility),
+      loaded: self.loaded,
     };
 
     let content =
@@ -140,9 +162,14 @@ impl ModList {
     remove_symlinks(&self.mods_path())?;
     remove_symlinks(&self.dlcs_path())?;
     remove_symlinks(&self.menus_path())?;
-    remove_symlinks(&self.saves_path())?;
+    remove_symlinks(&self.saves_path().join("gamesaves"))?;
     remove_symlinks(&self.content_path())?;
     remove_symlinks(&self.bundles_path())?;
+
+    let scriptmerger_path = std::env::current_dir()
+      .unwrap()
+      .join(constants::SCRIPTMERGER_PATH);
+    remove_symlinks(&scriptmerger_path)?;
 
     Ok(())
   }
@@ -164,22 +191,56 @@ impl ModList {
 
     for modlist in valid_imported_modlists {
       println!("loading {}", modlist.name);
-
-      // symlinks to DLCs
       symlink_children(modlist.dlcs_path(), self.dlcs_path())?;
-
-      // symlinks to mods
       symlink_children(modlist.mods_path(), self.mods_path())?;
-
-      // symlinks to menus
       symlink_children(modlist.menus_path(), self.menus_path())?;
-
       symlink_children(modlist.content_path(), self.content_path())?;
-
       symlink_children(modlist.bundles_path(), self.bundles_path())?;
 
-      symlink_children(modlist.saves_path(), self.saves_path())?;
+      // copy once initial mod manager files from vanilla modlist
+      if modlist.name == "vanilla" && self.mgr_path().is_dir() && self.mgr_path().read_dir()?.next().is_none() {
+        copy_dir_files(&modlist.mgr_path(), &self.mgr_path())?;
+      }
+
+      // copy once initial game config files from vanilla modlist
+      if modlist.name == "vanilla" && !self.saves_path().join("user.settings").exists() {
+        copy_dir_files(&modlist.saves_path(), &self.saves_path())?;
+      }
+
+      symlink_children(modlist.saves_path().join("gamesaves"), self.saves_path().join("gamesaves"))?;
     }
+
+    // merge the input.settings files of all imported modlists into the current modlist
+    // create iterator of valid imported modlists again because the previous one was consumed
+    let valid_imported_modlists = self
+      .imported_modlists
+      .iter()
+      .map(|modlist_name| ModList::get_by_name(&modlist_name))
+      .filter(|modlist| modlist.is_some())
+      .map(|some_modlist| some_modlist.unwrap())
+      .filter(|modlist| modlist.is_valid());
+
+    for modlist in valid_imported_modlists {
+
+      if modlist.name != "vanilla" {
+        merge_inputs_settings( modlist.saves_path().clone().join("input.settings"), self.saves_path().clone().join("input.settings")).ok();
+      }
+      
+    }
+
+    // Now truncate process on input.settings file
+    if self.saves_path().join("input.settings").exists() {
+      truncate_input_settings(self.saves_path().join("input.settings"));
+    }  
+
+    Ok(())
+  }
+
+  /// Set the current modlist state
+  pub fn loaded(&mut self, isloaded: bool) -> std::io::Result<()> {
+    self.read_metadata_from_disk()?;
+    self.loaded = isloaded;
+    self.write_metadata_to_disk().unwrap();
 
     Ok(())
   }
@@ -206,6 +267,10 @@ impl ModList {
 
   pub fn saves_path(&self) -> PathBuf {
     self.path().join("saves")
+  }
+
+  pub fn mgr_path(&self) -> PathBuf {
+    self.path().join("mgr")
   }
 
   pub fn content_path(&self) -> PathBuf {
@@ -244,37 +309,7 @@ impl ModList {
       constants::SCRIPTMERGER_MERGEDFILES_FOLDERNAME
     ))
   }
-
-  pub fn get_children(&self, folder: PathBuf) -> Vec<String> {
-    let readdir = fs::read_dir(folder);
-
-    if readdir.is_err() {
-      return Vec::new();
-    }
-
-    let readdir = readdir.unwrap();
-    let mut output = Vec::new();
-    for child in readdir {
-      if child.is_err() {
-        continue;
-      }
-
-      let child = child.unwrap();
-      let name = child.file_name();
-      let name = name.into_string();
-
-      if name.is_err() {
-        continue;
-      }
-
-      let name = name.unwrap();
-
-      output.push(name);
-    }
-
-    output
-  }
-
+  
   pub fn has_modlist_imported(&self, modlist: &str) -> bool {
     self
       .imported_modlists
@@ -287,6 +322,7 @@ impl ModList {
     let mods_path = self.mods_path();
     let menus_path = self.menus_path();
     let saves_path = self.saves_path();
+    let mgr_path = self.mgr_path();
     let content_path = self.content_path();
     let bundles_path = self.bundles_path();
 
@@ -295,6 +331,7 @@ impl ModList {
       && mods_path.exists()
       && menus_path.exists()
       && saves_path.exists()
+      && mgr_path.exists()
       && content_path.exists()
       && bundles_path.exists()
   }
@@ -325,7 +362,13 @@ impl ModList {
 
     let current_saves_path = dirs::document_dir()
       .ok_or(std::io::ErrorKind::NotFound)?
-      .join("The Witcher 3");
+      .join(constants::WITCHER_SAVES);
+
+    let current_mgr_path = dirs::document_dir()
+      .ok_or(std::io::ErrorKind::NotFound)?
+      .join(constants::MODMANAGER_PATH);
+
+    let old_modlist_name = helper::get_installed_modlist_name().ok().unwrap();
 
     // first, we remove all existing symlinks if they exist
     // let them fail if the paths do not exist
@@ -344,6 +387,10 @@ impl ModList {
       println!("could not remove current saves symlink: {}", error);
     }
 
+    if let Err(error) = remove_symlink(&current_mgr_path) {
+      println!("could not remove current mod manager symlink: {}", error);
+    }
+
     if let Err(error) = remove_symlink(&current_content_path) {
       println!("could not remove current content symlink: {}", error);
     }
@@ -357,6 +404,7 @@ impl ModList {
     make_symlink(&current_dlc_path, &self.dlcs_path())?;
     make_symlink(&current_menu_path, &self.menus_path())?;
     make_symlink(&current_saves_path, &self.saves_path())?;
+    make_symlink(&current_mgr_path, &self.mgr_path())?;
     make_symlink(&current_content_path, &self.content_path())?;
     make_symlink(&current_bundles_path, &self.bundles_path())?;
 
@@ -383,9 +431,38 @@ impl ModList {
       let scriptmerger_mergeinventory_path =
         scriptmerger_path.join(constants::MODLIST_MERGEINVENTORY_PATH);
 
-      if let Err(error) = remove_symlink(&scriptmerger_mergeinventory_path) {
-        // let it fail on purpose, just add a log for debugging
-        println!("could not remove scriptmerger mergeinventory: {}", error);
+      if scriptmerger_mergeinventory_path.is_symlink() {
+        if let Err(error) = remove_symlink(&scriptmerger_mergeinventory_path) {
+          // let it fail on purpose, just add a log for debugging
+          println!("could not remove scriptmerger mergeinventory: {}", error);
+        }
+      }
+      else if scriptmerger_mergeinventory_path.is_file() {
+        if !old_modlist_name.is_empty() {
+          let old_modlist = ModList::get_by_name(&old_modlist_name);
+          if !old_modlist.is_none() {
+            let old_modlist = old_modlist.unwrap();
+            let old_modlist_mergeinventory_path = old_modlist.mergeinventory_path();
+
+            if old_modlist_mergeinventory_path.exists() {
+              // remove the mergeinventory file of the previous modlist
+              fs::remove_file(&old_modlist_mergeinventory_path)?;
+              // and move to previous modlist
+              fs::rename(&scriptmerger_mergeinventory_path, &old_modlist_mergeinventory_path )?;
+            }
+            else {
+              // remove the mergeinventory file of the previous modlist
+              fs::remove_file(&scriptmerger_mergeinventory_path)?;
+            }
+          }
+          else {
+            // remove the mergeinventory file of the previous modlist
+            fs::remove_file(&scriptmerger_mergeinventory_path)?;
+          }
+        }
+        else {          
+          fs::remove_file(&scriptmerger_mergeinventory_path)?;
+        }
       }
 
       make_symlink(
@@ -425,7 +502,8 @@ impl ModList {
     fs::create_dir_all(self.dlcs_path());
     fs::create_dir_all(self.mods_path());
     fs::create_dir_all(self.menus_path());
-    fs::create_dir_all(self.saves_path());
+    fs::create_dir_all(self.saves_path().join("gamesaves"));
+    fs::create_dir_all(self.mgr_path());
     fs::create_dir_all(self.content_path());
     fs::create_dir_all(self.bundles_path());
     fs::create_dir_all(self.mergedbundles_path());
@@ -449,6 +527,10 @@ impl ModList {
 
   pub fn is_packed(&self) -> bool {
     return self.pack_path().is_dir();
+  }
+
+  pub fn is_merged(&self) -> bool {
+    return self.mergedfiles_path().is_dir();
   }
 
   pub fn pack(&self) -> std::io::Result<()> {

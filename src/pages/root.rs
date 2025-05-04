@@ -1,9 +1,11 @@
 use crate::components;
 use crate::models::modlist::ModList;
+use crate::utils::helper;
 
 use actix_web::HttpRequest;
 use actix_web::HttpResponse;
 use maud::html;
+use crate::utils::helper::get_installed_modlist_name;
 
 pub async fn render(req: HttpRequest) -> HttpResponse {
   let query = req.query_string();
@@ -71,15 +73,33 @@ pub async fn render(req: HttpRequest) -> HttpResponse {
   // if there is no vanilla modlist, force a call to initialize
   let should_initialize = ModList::get_by_name("vanilla").is_none();
 
+  // get installed list name
+  let installed_list_name: String = get_installed_modlist_name().unwrap().to_string();
+
   let content = html! {
     section {
 
       @if should_initialize {
-        form method="post" action="/api/modlist/initialize" {
-          input type="submit" value="initialize";
+        @if helper::check_mod_mgr_env() && helper::check_script_mgr_env() {
+          form method="post" action="/api/modlist/initialize" {
+            input type="submit" value="initialize";
+          }
+        }
+        @else {
+          p style="margin-left: 20%; margin-right: 20%;" {"    You must passed the requirements:"}
+          @if !helper::check_mod_mgr_env() {
+            h5 p style="margin-left: 20%; margin-right: 20%;" {"-> Missing TheWitcher3ModManager configuration files. Run it once."}      
+          }
+
+          @if !helper::check_script_mgr_env() {
+            h5 p style="margin-left: 20%; margin-right: 20%;" {"-> You need to unpack the WitcherScriptMerger to the \\scriptmerger folder in the main Witcher game folder, same as \\dlc, \\mods"}      
+          }
         }
       }
       @else {
+        form method="post" action="/api/modlist/uninitialize" onsubmit="return confirm('The game will be restored to the initialization point. Do you agree?');" {
+          input type="submit" value="Uninitialize";
+        }
         // div class="row flex-center" {
         //   a href={"?visibility=" (visibility_down)} { "<" }
         //   span title="This allows you to navigate through modlists with different visibility levels" { (visibility) };
@@ -128,7 +148,12 @@ pub async fn render(req: HttpRequest) -> HttpResponse {
                             form method="post" action="/api/modlist/install" {
                               input type="hidden" name="name" value=(&modlists[*index].name);
 
-                              input type="submit" value="install";
+                              @if &modlists[*index].name == &installed_list_name {
+                                input type="submit" style="color:green;" value="installed";
+                              }
+                              @else {
+                                input type="submit" value="install";
+                              }
                             }
                           }
                         }

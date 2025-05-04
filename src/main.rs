@@ -1,10 +1,11 @@
-#![feature(proc_macro_hygiene)]
+//#![feature(proc_macro_hygiene)]
 // uncomment the line below when building a release.
 // It allows the binary to start in background without a cli window.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-extern crate chrono;
+//extern crate chrono;
 
+use crate::utils::helper;
 use actix_web::{web, App, HttpServer};
 
 mod api;
@@ -21,7 +22,7 @@ async fn main() -> std::io::Result<()> {
     .and_then(|n| n.parse::<u16>().ok())
     .unwrap_or(5000);
 
-  if (cfg!(target_os = "windows")) {
+  if cfg!(target_os = "windows") {
     std::process::Command::new("cmd")
       .arg("/C")
       .arg("taskkill")
@@ -32,10 +33,14 @@ async fn main() -> std::io::Result<()> {
       .arg(format!("PID ne {}", std::process::id()))
       .output()?;
   }
+  
+  if cfg!(not(debug_assertions)) {
+    helper::test_symlink();
+  }
 
   // open a new browser tab
 
-  #[cfg(not(debug_assertions))]
+  //#[cfg(not(debug_assertions))]
   std::process::Command::new("cmd")
     .arg("/C")
     .arg("start")
@@ -73,6 +78,10 @@ async fn main() -> std::io::Result<()> {
           .route(
             "/modlist/initialize",
             web::post().to(api::modlist::initialize),
+          )
+          .route(
+            "/modlist/uninitialize",
+            web::post().to(api::modlist::uninitialize),
           )
           .route(
             "/modlist/create",

@@ -2,16 +2,15 @@ use encoding_rs_io::DecodeReaderBytes;
 use serde::{Deserialize, Serialize};
 use std::thread;
 use std::{
-  cell::Cell,
   error::Error,
   io::BufReader,
   io::{BufRead, Read},
-  path::{Path, PathBuf},
   process::ChildStdout,
-  sync::{Arc, Mutex},
+  path::PathBuf,
+  sync::Arc
 };
 use websocket::OwnedMessage;
-use websocket::{sync::Server, Message};
+use websocket::sync::Server;
 
 use crate::{constants, models::modlist::ModList};
 
@@ -151,13 +150,13 @@ pub async fn main(modlist_name: String) {
       return;
     }
 
-    let mut client = request.use_protocol("rust-websocket").accept().unwrap();
+    let client = request.use_protocol("rust-websocket").accept().unwrap();
 
     let ip = client.peer_addr().unwrap();
 
     println!("Connection from {}", ip);
 
-    let mut reader =
+    let reader =
       start_merging(&modlist_name).expect("could not get the stdout reader for the script merger");
     let (mut receiver, mut sender) = client.split().unwrap();
 

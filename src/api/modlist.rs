@@ -1,4 +1,4 @@
-use std::fs;
+use std::fs::{self};
 use std::path::Path;
 
 use crate::constants;
@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::modlist::ModList;
 use crate::utils::api_error::api_error;
-use crate::utils::copy_across_drives;
+use crate::utils::{copy_across_drives, symlinks};
+use crate::utils::helper::{is_installed, kill_apps};
 
 #[derive(Serialize, Deserialize)]
 pub struct InstallModListBody {
@@ -38,6 +39,10 @@ pub async fn install_modlist(
     ))
   })?;
 
+  if modlist.name != "vanilla" {      
+    kill_apps();
+  }
+
   Ok(
     HttpResponse::Found()
       .append_header((http::header::LOCATION, "/"))
@@ -63,7 +68,7 @@ pub async fn create_modlist(
 
   Ok(
     HttpResponse::Found()
-      .append_header(((http::header::LOCATION, "/")))
+      .append_header((http::header::LOCATION, "/"))
       .content_type("text/plain")
       .body("created"),
   )
@@ -198,7 +203,7 @@ pub async fn load_imports_modlist(
   _req: HttpRequest, form: web::Form<ModListLoadImportsBody>,
 ) -> Result<HttpResponse> {
   let modlist = ModList::get_by_name(&form.modlist_name);
-  println!("loading imports");
+  //println!("loading imports");
 
   if modlist.is_none() {
     return Ok(
@@ -220,7 +225,15 @@ pub async fn load_imports_modlist(
         )),
     );
   }
+  else {
+    kill_apps();
+    modlist.loaded( true ).ok();
 
+    if !is_installed( &modlist.name ) {
+        modlist.install().ok(); // required to install mods by ScriptMerger  - short way auto
+    }    
+  }
+  
   Ok(
     HttpResponse::Found()
       .append_header((
@@ -250,9 +263,9 @@ pub async fn unload_imports_modlist(
     );
   }
 
-  let modlist = modlist.unwrap();
+  let mut modlist = modlist.unwrap();
 
-  if let Err(err) = modlist.unload_imported_modlists() {
+    if let Err(err) = modlist.unload_imported_modlists() {
     return Ok(
       HttpResponse::InternalServerError()
         .content_type("text/plain")
@@ -261,6 +274,10 @@ pub async fn unload_imports_modlist(
           err
         )),
     );
+  }
+  else {
+    kill_apps();
+    modlist.loaded( false ).ok();
   }
 
   Ok(
@@ -291,7 +308,12 @@ pub async fn initialize(_req: HttpRequest) -> Result<HttpResponse> {
     .ok_or(api_error(
       "Internal server error: could not find the Documents directory",
     ))?
-    .join("The Witcher 3");
+    .join(constants::WITCHER_SAVES);
+  let current_mgr_path = dirs::document_dir()
+    .ok_or(api_error(
+      "Internal server error: could not find the Documents directory",
+    ))?
+    .join(constants::MODMANAGER_PATH);
   let current_menu_path = witcher_root
     .join("bin")
     .join("config")
@@ -308,6 +330,10 @@ pub async fn initialize(_req: HttpRequest) -> Result<HttpResponse> {
   let vanilla_content_path = vanilla_modlist.join("content");
   let vanilla_bundles_path = vanilla_modlist.join("bundles");
   let vanilla_saves_path = vanilla_modlist.join("saves");
+  let vanilla_mgr_path = vanilla_modlist.join("mgr");
+
+  //prevent
+  kill_apps();
 
   let result = fs::create_dir_all(vanilla_modlist)
     .map_err(|err| {
@@ -375,7 +401,23 @@ pub async fn initialize(_req: HttpRequest) -> Result<HttpResponse> {
         })
         .map_err(|err: std::io::Error| {
           api_error(format!(
-            "could not transfer the save into the vanilla modlist: {}",
+            "TheWitcher3 saves empty yet: {}",
+            err
+          ))
+        })
+    })
+    .and_then(|_| {
+      fs::rename(&current_mgr_path, &vanilla_mgr_path)
+        .or_else(|_| {
+          copy_across_drives(current_mgr_path.clone(), vanilla_mgr_path.clone())?;
+
+          fs::remove_dir_all(&current_mgr_path)?;
+
+          Ok(())
+        })
+        .map_err(|err: std::io::Error| {
+          api_error(format!(
+            "TheWitcher3ModManager not installed/configured yet: {}",
             err
           ))
         })
@@ -424,7 +466,22 @@ pub async fn initialize(_req: HttpRequest) -> Result<HttpResponse> {
         &vanilla_mods_path, &current_mods_path, error
       );
     };
+
+    if let Err(error) = fs::rename(&vanilla_mgr_path, &current_mgr_path) {
+      println!(
+        "could not rename {:?} to {:?}, error: {}",
+        &vanilla_mods_path, &current_mods_path, error
+      );
+    };
+
   }
+
+  let modlist = ModList::get_by_name("vanilla");
+  
+  if !modlist.is_none() {
+    let modlist = modlist.unwrap();
+    modlist.install().ok();
+  }  
 
   result?;
 
@@ -433,6 +490,163 @@ pub async fn initialize(_req: HttpRequest) -> Result<HttpResponse> {
       .append_header((http::header::LOCATION, "/"))
       .content_type("text/plain")
       .body("initialized"),
+  )
+}
+
+
+pub async fn uninitialize(_req: HttpRequest) -> Result<HttpResponse> {
+
+  let witcher_root = Path::new(constants::WITCHER_GAME_ROOT);
+
+  let witcher_mods_path = witcher_root
+  .join("mods");
+if witcher_mods_path.exists(){
+  fs::remove_dir_all(&witcher_mods_path)?;
+}
+
+  let witcher_dlc_path = witcher_root
+  .join("dlc");
+if witcher_dlc_path.exists(){
+  fs::remove_dir_all(&witcher_dlc_path)?;
+}
+
+let witcher_content_path = witcher_root
+    .join("content")
+    .join("content0")
+    .join("scripts");
+  if witcher_content_path.exists(){
+    fs::remove_dir_all(&witcher_content_path)?;
+  }
+
+  let witcher_bundles_path = witcher_root
+    .join("content")
+    .join("content0")
+    .join("bundles");
+  if witcher_bundles_path.exists(){
+    fs::remove_dir_all(&witcher_bundles_path)?;
+  }
+  let witcher_menu_path = witcher_root
+    .join("bin")
+    .join("config")
+    .join("r4game")
+    .join("user_config_matrix")
+    .join("pc");
+  if witcher_menu_path.exists(){  
+    fs::remove_dir_all(&witcher_menu_path)?;
+  }
+  let home_dir = dirs::document_dir().unwrap();
+
+  let witcher_home_path = Path::new(home_dir.as_path());
+  let witcher_saves_path = witcher_home_path.join(constants::WITCHER_SAVES);
+  if witcher_saves_path.exists(){
+    fs::remove_dir_all(&witcher_saves_path)?;
+  }  
+  let witcher_mgr_path = witcher_home_path.join(constants::MODMANAGER_PATH);
+  if witcher_mgr_path.exists(){
+    fs::remove_dir_all(&witcher_mgr_path)?;
+  }  
+
+  let modlist_database = Path::new(constants::MODLIST_DATABASE_PATH);
+
+  let vanilla_modlist = modlist_database.join("vanilla");
+  let vanilla_mods_path = vanilla_modlist.join("mods");
+  let vanilla_dlc_path = vanilla_modlist.join("dlcs");
+  let vanilla_menu_path = vanilla_modlist.join("menus");
+  let vanilla_content_path = vanilla_modlist.join("content");
+  let vanilla_bundles_path = vanilla_modlist.join("bundles");
+  let vanilla_saves_path = vanilla_modlist.join("saves");
+  let vanilla_mgr_path = vanilla_modlist.join("mgr");
+
+  // prevent
+  kill_apps();
+
+  symlinks::remove_symlinks(&witcher_root.to_path_buf())?;
+
+  let scriptmerger_path = std::env::current_dir()
+    .unwrap()
+    .join(constants::SCRIPTMERGER_PATH);
+  symlinks::remove_symlinks(&scriptmerger_path)?;
+  
+
+     let result = fs::rename(&vanilla_bundles_path, &witcher_bundles_path)
+    .map_err(|err| {
+      api_error(format!(
+        "could not transfer the vanilla modlist into the root bundles: {}",
+        err
+      ))
+    })
+    .and_then(|_| {
+      fs::rename(&vanilla_mods_path, &witcher_mods_path).map_err(|err| {
+        api_error(format!(
+          "could not transfer the vanilla modlist into the root mods: {}",
+          err
+        ))
+      })
+    })
+    .and_then(|_| {
+      fs::rename(&vanilla_dlc_path, &witcher_dlc_path).map_err(|err| {
+        api_error(format!(
+          "could not transfer the vanilla modlist into the root dlc: {}",
+          err
+        ))
+      })
+    })
+    .and_then(|_| {
+      fs::rename(&vanilla_menu_path, &witcher_menu_path).map_err(|err| {
+        api_error(format!(
+          "could not transfer the vanilla modlist into the root menu: {}",
+          err
+        ))
+      })
+    })
+    .and_then(|_| {
+      fs::rename(&vanilla_content_path, &witcher_content_path).map_err(|err| {
+        api_error(format!(
+          "could not transfer the vanilla modlist into the root content: {}",
+          err
+        ))
+      })
+    })
+    .and_then(|_| {
+      fs::rename(&vanilla_saves_path, &witcher_saves_path)
+        .or_else(|_| {
+          copy_across_drives(vanilla_saves_path.clone(), witcher_saves_path.clone())?;
+
+          Ok(())
+        })
+        .map_err(|err: std::io::Error| {
+          api_error(format!(
+            "could not transfer the vanilla modlist into the saves: {}",
+            err
+          ))
+        })
+    })
+    .and_then(|_| {
+      fs::rename(&vanilla_mgr_path, &witcher_mgr_path)
+        .or_else(|_| {
+          copy_across_drives(vanilla_mgr_path.clone(), witcher_mgr_path.clone())?;
+
+          Ok(())
+        })
+        .map_err(|err: std::io::Error| {
+          api_error(format!(
+            "could not transfer the vanilla modlist into the Mod manager: {}",
+            err
+          ))
+        })
+    });
+
+    if result.is_ok(){
+      fs::remove_dir_all(&vanilla_modlist)?;
+    }
+
+  result?;
+ 
+  Ok(
+    HttpResponse::Found()
+      .append_header((http::header::LOCATION, "/"))
+      .content_type("text/plain")
+      .body("uninitialized"),
   )
 }
 
@@ -643,7 +857,7 @@ pub async fn merge_modlist(
         api_error(format!(
           "Internal server error: could not merge modlist. {}.
           Make sure your scriptmerger is installed in the correct directory,
-          ple);ase refer to the written documentation about merging modlists for
+          please refer to the written documentation about merging modlists for
           more information",
           err
         ))
@@ -695,82 +909,6 @@ pub async fn merge_modlist_scripts(
   crate::api::socket_merge::main(modlist.name).await;
 
   println!("dsf");
-
-  Ok(
-    HttpResponse::Found()
-      .append_header((
-        http::header::LOCATION,
-        format!("/modlist/{}", form.modlist_name),
-      ))
-      .content_type("text/plain")
-      .body("modlist merged"),
-  )
-}
-
-/// this version of the merge action uses the tw3-script-merger tool instead of
-/// scriptmerger
-pub async fn merge_modlist_scripts_old(
-  _req: HttpRequest, form: web::Form<MergeModListBody>,
-) -> Result<HttpResponse> {
-  let modlist = ModList::get_by_name(&form.modlist_name);
-
-  if modlist.is_none() {
-    return Ok(
-      HttpResponse::NotFound()
-        .content_type("text/plain")
-        .body("no such modlist"),
-    );
-  }
-
-  let modlist = modlist.unwrap();
-
-  let scriptmerger_path = std::env::current_dir()
-    .unwrap()
-    .join(constants::TW3SCRIPTMERGER_PATH);
-
-  let source_path = modlist.content_path();
-  let input_path = modlist.mods_path();
-  let output_path = input_path
-    .join(constants::SCRIPTMERGER_MERGEDFILES_FOLDERNAME)
-    .join("content")
-    .join("scripts");
-
-  use std::io::{BufRead, BufReader, Error, ErrorKind};
-  use std::process::{Command, Stdio};
-
-  let stdout = Command::new(scriptmerger_path)
-    .arg("--clean")
-    .arg("--texteditor")
-    .arg("code")
-    .arg("--source")
-    .arg(&source_path)
-    .arg("--input")
-    .arg(&input_path)
-    .arg("--output")
-    .arg(&output_path)
-    .stdout(Stdio::piped())
-    .spawn()
-    .map_err(|err| {
-      api_error(format!(
-        "Internal server error: could not run the tw3-script-merger tool. {}",
-        err
-      ))
-    })?
-    .stdout
-    .ok_or_else(|| Error::new(ErrorKind::Other, "Could not capture standard output"))
-    .map_err(|err| {
-      api_error(format!(
-        "Internal server error: an error occured when listening to the tw3-script-merger tool. {}",
-        err
-      ))
-    })?;
-
-  let reader = BufReader::new(stdout);
-
-  reader
-    .lines()
-    .filter_map(|line| line.ok())
-    .for_each(|line| println!("{}", line));
 
   Ok(
     HttpResponse::Found()

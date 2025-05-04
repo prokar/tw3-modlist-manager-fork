@@ -11,6 +11,7 @@ pub fn copy_across_drives(from: PathBuf, to: PathBuf) -> std::io::Result<()> {
       .arg("xcopy")
       .arg("/E")
       .arg("/I")
+      .arg("/-Y")
       .arg(from)
       .arg(to)
       .output()?;

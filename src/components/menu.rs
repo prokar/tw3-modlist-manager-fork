@@ -11,10 +11,10 @@ pub fn menu(page_title: &str) -> Markup {
       }, "/", page_title, "root"))
 
       form method="post" action="/api/program/exit" onsubmit="setTimeout(() => window.close(), 1000)" {
-        input type="submit" class="text-style" value="exit" style="
+        input type="submit" class="text-style" value="EXIT" style="
           position: absolute;
-          top: 10px;
-          right: 10px;
+          top: 20px;
+          right: 20px;
         ";
       }
     }
